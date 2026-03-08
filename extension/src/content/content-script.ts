@@ -5,8 +5,14 @@
   const ARTICLE_ROOT_SELECTOR = [
     "article",
     "[role='article']",
+    "[role='main']",
     "[itemprop='articleBody']",
     "main",
+    ".content",
+    ".post",
+    ".entry-content",
+    ".article-body",
+    ".se-main-container",
     "[class*='post-content']",
     "[class*='entry-content']",
     "[class*='article-content']",
@@ -20,6 +26,16 @@
     "[class*='markdown-body']",
     "[class*='prose']",
     ".cooked",
+  ].join(", ");
+  const EXCLUDED_CONTAINER_SELECTOR = [
+    "nav",
+    "aside",
+    "footer",
+    "header",
+    ".sidebar",
+    ".related",
+    ".comment",
+    ".comments",
   ].join(", ");
   const ARTICLE_MARKER_PATTERN = /(article|post|entry|story|thread|message|content|body|prose|markdown)/;
   const BOILERPLATE_MARKER_PATTERN = /(nav|menu|sidebar|related|recommend|comment|share|social|breadcrumb|promo|advert|ads|cookie|popup|subscribe|newsletter|pagination|toolbar|reaction|rail|footer)/;
@@ -146,8 +162,12 @@
       return false;
     }
 
+    if (element.matches(EXCLUDED_CONTAINER_SELECTOR)) {
+      return true;
+    }
+
     const tagName = element.tagName.toLowerCase();
-    if (["nav", "aside", "footer", "form"].includes(tagName)) {
+    if (["nav", "aside", "footer", "form", "header"].includes(tagName)) {
       return true;
     }
 
@@ -187,11 +207,11 @@
     const words = wordCount(normalized);
     const tagName = element.tagName.toLowerCase();
 
-    if (!normalized || normalized.length < 28 || normalized.length > 1600 || words < 6) {
+    if (!normalized || normalized.length < 20 || normalized.length > 1800 || words < 4) {
       return false;
     }
 
-    if (tagName === "li" && normalized.length < 45) {
+    if (tagName === "li" && normalized.length < 30) {
       return false;
     }
 
@@ -203,7 +223,7 @@
       return false;
     }
 
-    if (tagName === "div") {
+    if (tagName === "div" || tagName === "section") {
       const childCount = Array.from(element.children).filter((child) => child instanceof HTMLElement).length;
       const structuralChildren = Array.from(element.children).filter((child) =>
         ["P", "DIV", "UL", "OL", "LI", "ARTICLE", "SECTION", "ASIDE", "NAV"].includes(child.tagName),
@@ -213,7 +233,7 @@
         return false;
       }
 
-      if (!/[.!?]/.test(normalized) && words < 14) {
+      if (!/[.!?]/.test(normalized) && words < 10) {
         return false;
       }
     }
@@ -223,7 +243,7 @@
 
   function collectArticleBlocks(root: Element, limit: number): string[] {
     const texts: string[] = [];
-    const candidates = Array.from(root.querySelectorAll("p, div, li, blockquote, pre"));
+    const candidates = Array.from(root.querySelectorAll("p, div, section, li, blockquote, pre"));
 
     for (const candidate of candidates) {
       if (!isVisible(candidate)) {
@@ -394,10 +414,10 @@
         score -= 12;
       }
 
-      if (!headline && sections.length < 4) {
+      if (!headline && sections.length < 3) {
         continue;
       }
-      if (totalTextLength < 260) {
+      if (totalTextLength < 220) {
         continue;
       }
 
@@ -587,10 +607,10 @@
       const averageTextLength = items.reduce((sum, item) => sum + (item.text?.length ?? 0), 0) / items.length;
       let score = items.length * 6 + titledItems * 3 + linkedItems;
 
-      if (articleScore >= 70 && items.length <= 5) {
+      if (articleScore >= 60 && items.length <= 6) {
         score -= 30;
       }
-      if (articleScore >= 70 && averageTextLength > 150) {
+      if (articleScore >= 60 && averageTextLength > 140) {
         score -= 18;
       }
       if (candidateChildren.some((child) => child.querySelector("h1"))) {
@@ -649,7 +669,7 @@
     if (averageKeyLength > 24) {
       score -= 8;
     }
-    if (articleScore >= 70 && bestEntries.length < 6) {
+    if (articleScore >= 60 && bestEntries.length < 8) {
       score -= 24;
     }
     if (score < 12) {
@@ -692,11 +712,7 @@
     candidates.sort((left, right) => right.score - left.score);
     let winner = candidates[0];
 
-    if (
-      articleCandidate &&
-      articleCandidate.score >= 68 &&
-      articleCandidate.score >= winner.score - 6
-    ) {
+    if (articleCandidate && shouldPreferArticleCandidate(articleCandidate, winner)) {
       winner = articleCandidate;
     }
 
@@ -711,6 +727,21 @@
     });
 
     return winner;
+  }
+
+  function shouldPreferArticleCandidate(articleCandidate: DetectedCandidate, currentWinner: DetectedCandidate): boolean {
+    if (articleCandidate.kind !== "article") {
+      return false;
+    }
+
+    const payload = articleCandidate.payload as Browmate.ArticlePayload;
+    const totalTextLength = payload.sections.reduce((sum, section) => sum + section.length, 0);
+    const strongArticleSignal = payload.headline.length >= 20 && payload.sections.length >= 4 && totalTextLength >= 600;
+
+    return (
+      (strongArticleSignal && articleCandidate.score >= currentWinner.score - 12) ||
+      (articleCandidate.score >= 68 && articleCandidate.score >= currentWinner.score - 6)
+    );
   }
 
   function extractPage(preferredTarget?: Browmate.ExtractionTarget): Browmate.ExtractedPage {

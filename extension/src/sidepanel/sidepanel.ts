@@ -195,13 +195,13 @@ function buildCsv(ir: Browmate.ExtractedPage): string {
   if (ir.payload.kind === "table") {
     return [ir.payload.columns, ...ir.payload.rows]
       .map((row) => row.map((cell) => csvEscape(cell)).join(","))
-      .join("\n");
+      .join("\r\n");
   }
 
   if (ir.payload.kind === "kv") {
     return [["key", "value"], ...ir.payload.entries.map((entry) => [entry.key, entry.value])]
       .map((row) => row.map((cell) => csvEscape(cell)).join(","))
-      .join("\n");
+      .join("\r\n");
   }
 
   if (ir.payload.kind === "card_list") {
@@ -221,7 +221,7 @@ function buildCsv(ir: Browmate.ExtractedPage): string {
     });
     return [header, ...rows]
       .map((row) => row.map((cell) => csvEscape(cell)).join(","))
-      .join("\n");
+      .join("\r\n");
   }
 
   const header = ["headline", "byline", "section_index", "section_text", "links"];
@@ -236,7 +236,7 @@ function buildCsv(ir: Browmate.ExtractedPage): string {
 
   return [header, ...rows]
     .map((row) => row.map((cell) => csvEscape(cell)).join(","))
-    .join("\n");
+    .join("\r\n");
 }
 
 function slugify(value: string): string {
@@ -335,7 +335,19 @@ function buildSuccessStatus(trigger: ExtractionTrigger, ir: Browmate.ExtractedPa
   const mode = requestedTarget === "auto"
     ? `Auto detect chose ${ir.kind}.`
     : `Requested ${requestedTarget}.`;
-  return `${prefix} extracted ${ir.kind} from ${ir.meta.hostname}. ${mode}`;
+  const warning = ir.kind === "article" && isWeakArticleResult(ir)
+    ? " Warning: article extraction looks partial. Try Article mode on the full post page."
+    : "";
+  return `${prefix} extracted ${ir.kind} from ${ir.meta.hostname}. ${mode}${warning}`;
+}
+
+function isWeakArticleResult(ir: Browmate.ExtractedPage): boolean {
+  if (ir.payload.kind !== "article") {
+    return false;
+  }
+
+  const totalTextLength = ir.payload.sections.reduce((sum, section) => sum + section.length, 0);
+  return ir.payload.sections.length < 3 || totalTextLength < 500;
 }
 
 async function extract(preferredTarget: Browmate.ExtractionTarget | undefined, trigger: ExtractionTrigger): Promise<void> {
@@ -439,7 +451,7 @@ async function exportCsv(): Promise<void> {
   }
 
   const filename = `${slugify(state.currentIr.meta.hostname)}-${state.currentIr.kind}.csv`;
-  await downloadText(filename, buildCsv(state.currentIr), "text/csv");
+  await downloadText(filename, `\uFEFF${buildCsv(state.currentIr)}`, "text/csv;charset=utf-8");
   setStatus(`Saved ${filename}.`);
 }
 
