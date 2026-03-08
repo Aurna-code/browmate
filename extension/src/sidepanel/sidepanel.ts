@@ -3,16 +3,37 @@
 type SelectValue = Browmate.ExtractionTarget | "auto";
 
 const PRESETS_KEY = "sitePresets";
+const LOG_PREFIX = "[Browmate Panel]";
 
 const state: {
   currentIr: Browmate.ExtractedPage | null;
   activeContext: Browmate.ActiveTabContext | null;
   requestToken: number;
+  busy: boolean;
+  lastAutoExtractContextKey: string | null;
 } = {
   currentIr: null,
   activeContext: null,
   requestToken: 0,
+  busy: false,
+  lastAutoExtractContextKey: null,
 };
+
+function logInfo(event: string, details?: unknown): void {
+  if (typeof details === "undefined") {
+    console.info(LOG_PREFIX, event);
+    return;
+  }
+  console.info(LOG_PREFIX, event, details);
+}
+
+function logWarn(event: string, details?: unknown): void {
+  if (typeof details === "undefined") {
+    console.warn(LOG_PREFIX, event);
+    return;
+  }
+  console.warn(LOG_PREFIX, event, details);
+}
 
 function requireElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -35,17 +56,61 @@ const loadPresetBtn = requireElement<HTMLButtonElement>("loadPresetBtn");
 const exportJsonBtn = requireElement<HTMLButtonElement>("exportJsonBtn");
 const exportCsvBtn = requireElement<HTMLButtonElement>("exportCsvBtn");
 
+function emptyContext(): Browmate.ActiveTabContext {
+  return {
+    tabId: null,
+    recordedAt: null,
+    url: undefined,
+    error: undefined,
+  };
+}
+
 function setStatus(message: string): void {
   statusEl.textContent = message;
 }
 
-function setControlsDisabled(disabled: boolean): void {
-  extractBtn.disabled = disabled;
-  savePresetBtn.disabled = disabled;
-  loadPresetBtn.disabled = disabled;
-  exportJsonBtn.disabled = disabled;
-  exportCsvBtn.disabled = disabled;
-  targetSelectEl.disabled = disabled;
+function contextKey(context: Browmate.ActiveTabContext | null): string {
+  return [
+    context?.tabId ?? "none",
+    context?.recordedAt ?? "none",
+    context?.url ?? "",
+    context?.error ?? "",
+  ].join("|");
+}
+
+function hasUsableContext(context: Browmate.ActiveTabContext | null): context is Browmate.ActiveTabContext & { tabId: number } {
+  return Boolean(context) && !context.error && typeof context.tabId === "number";
+}
+
+function describeContext(context: Browmate.ActiveTabContext | null): string {
+  if (!context?.url) {
+    return "the attached tab";
+  }
+
+  try {
+    return new URL(context.url).hostname || context.url;
+  } catch {
+    return context.url;
+  }
+}
+
+function detachedStatus(context: Browmate.ActiveTabContext | null): string {
+  if (context?.error) {
+    return context.error;
+  }
+  return "No tab is attached. Open a normal webpage and click the Browmate toolbar action.";
+}
+
+function syncControls(): void {
+  const attached = hasUsableContext(state.activeContext);
+  const hasIr = Boolean(state.currentIr);
+
+  targetSelectEl.disabled = state.busy || !attached;
+  extractBtn.disabled = state.busy || !attached;
+  loadPresetBtn.disabled = state.busy || !attached;
+  savePresetBtn.disabled = state.busy || !hasIr;
+  exportJsonBtn.disabled = state.busy || !hasIr;
+  exportCsvBtn.disabled = state.busy || !hasIr;
 }
 
 function getPreferredTarget(): Browmate.ExtractionTarget | undefined {
@@ -74,6 +139,7 @@ async function getActiveContext(): Promise<Browmate.ActiveTabContext> {
     type: "BROWMATE_GET_ACTIVE_CONTEXT",
   });
   state.activeContext = response.context;
+  logInfo("activeContext loaded", response.context);
   return response.context;
 }
 
@@ -186,6 +252,7 @@ function renderIr(ir: Browmate.ExtractedPage): void {
   timeValueEl.textContent = new Date(ir.meta.extractedAt).toLocaleTimeString();
   previewEl.textContent = JSON.stringify(ir, null, 2);
   renderSummary(ir);
+  syncControls();
 }
 
 function clearIr(): void {
@@ -195,27 +262,20 @@ function clearIr(): void {
   timeValueEl.textContent = "-";
   summaryContentEl.textContent = "Extracted records will appear here.";
   previewEl.textContent = "{}";
-}
-
-function ensureUsableContext(context: Browmate.ActiveTabContext): number {
-  if (context.error) {
-    clearIr();
-    throw new Error(context.error);
-  }
-
-  if (typeof context.tabId !== "number") {
-    clearIr();
-    throw new Error("Click the Browmate toolbar action on a page before extracting.");
-  }
-
-  return context.tabId;
+  syncControls();
 }
 
 async function extract(preferredTarget?: Browmate.ExtractionTarget): Promise<void> {
   const requestToken = ++state.requestToken;
-  setStatus("Extracting visible content from the current tab...");
   const context = await getActiveContext();
-  ensureUsableContext(context);
+
+  if (!hasUsableContext(context)) {
+    clearIr();
+    logWarn("extract requested without attached tab", context);
+    setStatus("Trying to attach the current tab before extracting...");
+  } else {
+    setStatus(`Extracting visible content from ${describeContext(context)}...`);
+  }
 
   const response = await sendRuntimeMessage<Browmate.RunExtractionRequest, Browmate.RunExtractionResponse>({
     type: "BROWMATE_RUN_EXTRACTION",
@@ -223,15 +283,22 @@ async function extract(preferredTarget?: Browmate.ExtractionTarget): Promise<voi
   });
 
   if (!response.ok || !response.ir) {
+    logWarn("extraction failed", { error: response.error, preferredTarget });
     throw new Error(response.error || "Extraction failed.");
   }
 
   if (requestToken !== state.requestToken) {
+    logWarn("stale extraction response ignored", { requestToken, latestRequestToken: state.requestToken });
     return;
   }
 
   renderIr(response.ir);
+  state.lastAutoExtractContextKey = contextKey(await getActiveContext());
   setStatus(`Extracted ${response.ir.kind} data from ${response.ir.meta.hostname}.`);
+  logInfo("extraction success", {
+    kind: response.ir.kind,
+    url: response.ir.meta.url,
+  });
 }
 
 async function readPresets(): Promise<Record<string, Browmate.SitePreset>> {
@@ -301,12 +368,50 @@ async function exportCsv(): Promise<void> {
 
 async function runAction(action: () => Promise<void>): Promise<void> {
   try {
-    setControlsDisabled(true);
+    state.busy = true;
+    syncControls();
     await action();
   } catch (error) {
+    logWarn("panel action failed", error);
     setStatus(error instanceof Error ? error.message : "Unexpected error.");
   } finally {
-    setControlsDisabled(false);
+    state.busy = false;
+    syncControls();
+  }
+}
+
+function applyActiveContext(
+  context: Browmate.ActiveTabContext,
+  options: { autoExtract: boolean; source: string },
+): void {
+  state.activeContext = context;
+  logInfo("activeContext applied", {
+    source: options.source,
+    tabId: context.tabId,
+    url: context.url,
+    error: context.error,
+    recordedAt: context.recordedAt,
+  });
+
+  if (!hasUsableContext(context)) {
+    state.lastAutoExtractContextKey = null;
+    clearIr();
+    setStatus(detachedStatus(context));
+    return;
+  }
+
+  syncControls();
+
+  const nextKey = contextKey(context);
+  if (options.autoExtract && !state.busy && state.lastAutoExtractContextKey !== nextKey) {
+    state.lastAutoExtractContextKey = nextKey;
+    setStatus(`Attached to ${describeContext(context)}. Extracting...`);
+    void runAction(() => extract(getPreferredTarget()));
+    return;
+  }
+
+  if (!state.currentIr) {
+    setStatus(`Attached to ${describeContext(context)}. Click Extract to capture the page.`);
   }
 }
 
@@ -334,30 +439,33 @@ function wireEvents(): void {
 
 function watchActiveContext(): void {
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "session" || !changes.activeContext?.newValue) {
+    if (areaName !== "session" || !changes.activeContext) {
       return;
     }
 
-    state.activeContext = changes.activeContext.newValue as Browmate.ActiveTabContext;
-    void runAction(() => extract(getPreferredTarget()));
+    const context = (changes.activeContext.newValue as Browmate.ActiveTabContext | undefined) ?? emptyContext();
+    applyActiveContext(context, {
+      autoExtract: !state.busy,
+      source: "storage.session",
+    });
   });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   wireEvents();
   watchActiveContext();
-  void runAction(async () => {
-    const context = await getActiveContext();
-    if (context.error) {
-      clearIr();
-      setStatus(context.error);
-      return;
+  clearIr();
+  setStatus("Checking the attached tab...");
+  void (async () => {
+    try {
+      const context = await getActiveContext();
+      applyActiveContext(context, {
+        autoExtract: true,
+        source: "initial_load",
+      });
+    } catch (error) {
+      logWarn("initial context load failed", error);
+      setStatus(error instanceof Error ? error.message : "Unable to load the attached tab.");
     }
-    if (typeof context.tabId !== "number") {
-      clearIr();
-      setStatus("Click the Browmate toolbar action on a page to attach the side panel.");
-      return;
-    }
-    await extract(getPreferredTarget());
-  });
+  })();
 });

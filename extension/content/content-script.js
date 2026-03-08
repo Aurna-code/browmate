@@ -1,10 +1,29 @@
 (() => {
+  const LOG_PREFIX = "[Browmate Content]";
+  function logInfo(event, details) {
+    if (typeof details === "undefined") {
+      console.info(LOG_PREFIX, event);
+      return;
+    }
+    console.info(LOG_PREFIX, event, details);
+  }
+
+  function logWarn(event, details) {
+    if (typeof details === "undefined") {
+      console.warn(LOG_PREFIX, event);
+      return;
+    }
+    console.warn(LOG_PREFIX, event, details);
+  }
+
   const globalWindow = window;
   if (globalWindow.__browmateContentScriptLoaded) {
+    logInfo("script already loaded", { url: location.href });
     return;
   }
 
   globalWindow.__browmateContentScriptLoaded = true;
+  logInfo("script loaded", { url: location.href });
 
   function cleanText(value) {
     return (value || "").replace(/\s+/g, " ").trim();
@@ -341,14 +360,28 @@
       return false;
     }
 
+    logInfo("extract request received", {
+      preferredTarget: message.preferredTarget,
+      url: location.href,
+    });
+
     try {
       const ir = extractPage(message.preferredTarget);
+      logInfo("extraction success", {
+        kind: ir.kind,
+        url: ir.meta.url,
+      });
       sendResponse({
         type: "BROWMATE_EXTRACT_RESULT",
         ok: true,
         ir,
       });
     } catch (error) {
+      logWarn("extraction failure", {
+        error: error instanceof Error ? error.message : error,
+        preferredTarget: message.preferredTarget,
+        url: location.href,
+      });
       sendResponse({
         type: "BROWMATE_EXTRACT_RESULT",
         ok: false,
