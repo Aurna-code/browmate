@@ -35,6 +35,25 @@
     ".comment",
     ".comments",
   ].join(", ");
+  const RAW_TEXT_SELECTOR = [
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "li",
+    "blockquote",
+    "pre",
+    "td",
+    "th",
+    "span",
+    "div",
+    "section",
+    "article",
+    "main",
+  ].join(", ");
   const ARTICLE_MARKER_PATTERN = /(article|post|entry|story|thread|message|content|body|prose|markdown)/;
   const BOILERPLATE_MARKER_PATTERN = /(nav|menu|sidebar|related|recommend|comment|share|social|breadcrumb|promo|advert|ads|cookie|popup|subscribe|newsletter|pagination|toolbar|reaction|rail|footer)/;
 
@@ -106,6 +125,46 @@
     }
 
     return cleanText(element.innerText || element.textContent || "");
+  }
+
+  function safeIdent(value) {
+    return value.replace(/[^a-zA-Z0-9_-]+/g, "").slice(0, 32);
+  }
+
+  function domHint(element) {
+    const parts = [];
+    let current = element;
+    let depth = 0;
+
+    while (current && current !== document.body && depth < 4) {
+      let part = current.tagName.toLowerCase();
+
+      if (current instanceof HTMLElement && current.id) {
+        part += `#${safeIdent(current.id)}`;
+        parts.unshift(part);
+        break;
+      }
+
+      if (current instanceof HTMLElement) {
+        const classNames = Array.from(current.classList).map(safeIdent).filter(Boolean).slice(0, 2);
+        if (classNames.length > 0) {
+          part += `.${classNames.join(".")}`;
+        } else if (current.parentElement) {
+          const siblings = Array.from(current.parentElement.children).filter(
+            (sibling) => sibling.tagName === current?.tagName,
+          );
+          if (siblings.length > 1) {
+            part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+          }
+        }
+      }
+
+      parts.unshift(part);
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    return parts.join(" > ").slice(0, 160);
   }
 
   function normalizeRow(cells, width) {
@@ -195,11 +254,11 @@
     const words = wordCount(normalized);
     const tagName = element.tagName.toLowerCase();
 
-    if (!normalized || normalized.length < 20 || normalized.length > 1800 || words < 4) {
+    if (!normalized || normalized.length < 14 || normalized.length > 2400 || words < 3) {
       return false;
     }
 
-    if (tagName === "li" && normalized.length < 30) {
+    if (tagName === "li" && normalized.length < 20) {
       return false;
     }
 
@@ -211,17 +270,19 @@
       return false;
     }
 
-    if (tagName === "div" || tagName === "section") {
+    if (["div", "section", "article", "main"].includes(tagName)) {
       const childCount = Array.from(element.children).filter((child) => child instanceof HTMLElement).length;
       const structuralChildren = Array.from(element.children).filter((child) =>
-        ["P", "DIV", "UL", "OL", "LI", "ARTICLE", "SECTION", "ASIDE", "NAV"].includes(child.tagName),
+        ["P", "DIV", "UL", "OL", "LI", "ARTICLE", "SECTION", "MAIN", "ASIDE", "NAV"].includes(child.tagName),
       ).length;
 
-      if (childCount > 10 || structuralChildren > 4) {
+      if (childCount > 24 && structuralChildren > 12 && linkDensity(element, normalized) > 0.18) {
         return false;
       }
-
-      if (!/[.!?]/.test(normalized) && words < 10) {
+      if (structuralChildren > 16 && words < 10) {
+        return false;
+      }
+      if (!/[.!?]/.test(normalized) && normalized.length < 60 && words < 6) {
         return false;
       }
     }
@@ -229,9 +290,75 @@
     return true;
   }
 
+  function hasEquivalentTextChild(element, text) {
+    for (const child of Array.from(element.children)) {
+      if (!isVisible(child)) {
+        continue;
+      }
+
+      const childText = visibleText(child);
+      if (!childText) {
+        continue;
+      }
+
+      if (childText === text) {
+        return true;
+      }
+
+      if (childText.length >= Math.floor(text.length * 0.88) && text.includes(childText)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function isMeaningfulRawTextBlock(element, text) {
+    const normalized = cleanText(text);
+    const tagName = element.tagName.toLowerCase();
+    const words = wordCount(normalized);
+
+    if (!normalized || normalized.length > 2600) {
+      return false;
+    }
+
+    if (["h1", "h2", "h3", "h4", "h5", "h6"].includes(tagName)) {
+      return normalized.length >= 3;
+    }
+
+    if (["td", "th", "pre", "blockquote"].includes(tagName)) {
+      return normalized.length >= 4;
+    }
+
+    if (tagName === "span") {
+      if (normalized.length < 10 && words < 2) {
+        return false;
+      }
+      return linkDensity(element, normalized) <= 0.8;
+    }
+
+    if (normalized.length < 8 || (words < 2 && normalized.length < 16)) {
+      return false;
+    }
+
+    if ((normalized.match(/\|/g) ?? []).length >= 8) {
+      return false;
+    }
+
+    if (linkDensity(element, normalized) > 0.8) {
+      return false;
+    }
+
+    if (["div", "section", "article", "main"].includes(tagName) && hasEquivalentTextChild(element, normalized)) {
+      return false;
+    }
+
+    return true;
+  }
+
   function collectArticleBlocks(root, limit) {
     const texts = [];
-    const candidates = Array.from(root.querySelectorAll("p, div, section, li, blockquote, pre"));
+    const candidates = Array.from(root.querySelectorAll("h2, h3, h4, p, div, section, li, blockquote, pre"));
 
     for (const candidate of candidates) {
       if (!isVisible(candidate)) {
@@ -252,6 +379,49 @@
     }
 
     return uniqueTexts(texts, limit);
+  }
+
+  function collectRawTextBlocks(limit) {
+    if (!(document.body instanceof HTMLElement)) {
+      return [];
+    }
+
+    const blocks = [];
+    const seen = new Set();
+    const candidates = Array.from(document.body.querySelectorAll(RAW_TEXT_SELECTOR));
+
+    for (const candidate of candidates) {
+      if (!isVisible(candidate)) {
+        continue;
+      }
+      if (isBoilerplateElement(candidate) || hasBoilerplateAncestor(candidate, document.body)) {
+        continue;
+      }
+
+      const text = visibleText(candidate);
+      if (!isMeaningfulRawTextBlock(candidate, text)) {
+        continue;
+      }
+
+      const normalized = cleanText(text);
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+
+      seen.add(normalized);
+      blocks.push({
+        text: normalized,
+        tagName: candidate.tagName.toLowerCase(),
+        domHint: domHint(candidate),
+        textLength: normalized.length,
+      });
+
+      if (blocks.length >= limit) {
+        break;
+      }
+    }
+
+    return blocks;
   }
 
   function collectLinks(root, limit) {
@@ -672,6 +842,41 @@
     };
   }
 
+  function detectRawText(bestStructuredScore = 0) {
+    const blocks = collectRawTextBlocks(120);
+    if (blocks.length === 0) {
+      return null;
+    }
+
+    const totalTextLength = blocks.reduce((sum, block) => sum + block.textLength, 0);
+    let score = Math.min(blocks.length, 36) + Math.min(Math.floor(totalTextLength / 400), 18);
+
+    if (blocks.some((block) => block.tagName === "h1")) {
+      score += 6;
+    }
+    if (bestStructuredScore >= 60) {
+      score -= 24;
+    } else if (bestStructuredScore >= 40) {
+      score -= 14;
+    }
+    if (blocks.length < 4 && totalTextLength < 180) {
+      score -= 22;
+    }
+    if (score < 12) {
+      return null;
+    }
+
+    return {
+      kind: "raw_text",
+      payload: {
+        kind: "raw_text",
+        blocks,
+      },
+      score,
+      notes: ["visible_text_fallback"],
+    };
+  }
+
   function buildIr(payload) {
     return {
       kind: payload.kind,
@@ -683,15 +888,21 @@
   function selectAutoCandidate() {
     const articleCandidate = detectArticle();
     const articleScore = articleCandidate?.score ?? 0;
-    const candidates = [
+    const structuredCandidates = [
       detectTable(),
       detectCardList(articleScore),
       detectKv(articleScore),
       articleCandidate,
     ].filter(Boolean);
+    const bestStructuredScore = structuredCandidates.reduce(
+      (maxScore, candidate) => Math.max(maxScore, candidate.score),
+      0,
+    );
+    const rawTextCandidate = detectRawText(bestStructuredScore);
+    const candidates = rawTextCandidate ? [...structuredCandidates, rawTextCandidate] : structuredCandidates;
 
     if (candidates.length === 0) {
-      throw new Error("No supported structure found on this page.");
+      throw new Error("No visible text blocks were found on this page.");
     }
 
     candidates.sort((left, right) => right.score - left.score);
@@ -758,6 +969,14 @@
       const candidate = detectArticle();
       if (!candidate) {
         throw new Error("No article structure found on this page.");
+      }
+      return buildIr(candidate.payload);
+    }
+
+    if (preferredTarget === "raw_text") {
+      const candidate = detectRawText();
+      if (!candidate) {
+        throw new Error("No visible text blocks were found on this page.");
       }
       return buildIr(candidate.payload);
     }

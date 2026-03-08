@@ -1,5 +1,5 @@
 declare namespace Browmate {
-  type ExtractionTarget = "table" | "card_list" | "kv" | "article";
+  type ExtractionTarget = "table" | "card_list" | "kv" | "article" | "raw_text";
 
   interface PageMeta {
     url: string;
@@ -48,11 +48,24 @@ declare namespace Browmate {
     }>;
   }
 
+  interface RawTextBlock {
+    text: string;
+    tagName: string;
+    domHint: string;
+    textLength: number;
+  }
+
+  interface RawTextPayload {
+    kind: "raw_text";
+    blocks: RawTextBlock[];
+  }
+
   type ExtractionPayload =
     | TablePayload
     | CardListPayload
     | KVPayload
-    | ArticlePayload;
+    | ArticlePayload
+    | RawTextPayload;
 
   interface ExtractedPage {
     kind: ExtractionTarget;

@@ -224,6 +224,21 @@ function buildCsv(ir: Browmate.ExtractedPage): string {
       .join("\r\n");
   }
 
+  if (ir.payload.kind === "raw_text") {
+    const header = ["index", "tag", "text", "text_length", "dom_hint"];
+    const rows = ir.payload.blocks.map((block, index) => [
+      String(index + 1),
+      block.tagName,
+      block.text,
+      String(block.textLength),
+      block.domHint,
+    ]);
+
+    return [header, ...rows]
+      .map((row) => row.map((cell) => csvEscape(cell)).join(","))
+      .join("\r\n");
+  }
+
   const header = ["headline", "byline", "section_index", "section_text", "links"];
   const linkSummary = ir.payload.links.map((link) => `${link.text} (${link.href})`).join(" | ");
   const rows = (ir.payload.sections.length > 0 ? ir.payload.sections : [""]).map((section, index) => [
@@ -294,6 +309,17 @@ function renderSummary(ir: Browmate.ExtractedPage): void {
     return;
   }
 
+  if (ir.payload.kind === "raw_text") {
+    const totalTextLength = ir.payload.blocks.reduce((sum, block) => sum + block.textLength, 0);
+    const sample = ir.payload.blocks
+      .slice(0, 3)
+      .map((block) => `${block.tagName}: ${block.text.slice(0, 80)}`)
+      .join(" | ");
+    lines.push(`Captured ${ir.payload.blocks.length} visible text blocks (${totalTextLength} chars). Sample: ${sample}`);
+    summaryContentEl.textContent = lines.join(" ");
+    return;
+  }
+
   lines.push(
     `Headline: ${ir.payload.headline}`,
     `Sections: ${ir.payload.sections.length}`,
@@ -333,7 +359,7 @@ function buildStartStatus(trigger: ExtractionTrigger, requestedTarget: Requested
 function buildSuccessStatus(trigger: ExtractionTrigger, ir: Browmate.ExtractedPage, requestedTarget: RequestedTarget): string {
   const prefix = buildStatusPrefix(trigger);
   const mode = requestedTarget === "auto"
-    ? `Auto detect chose ${ir.kind}.`
+    ? `Auto detect chose ${ir.kind}${ir.kind === "raw_text" ? " as a visible-text fallback." : "."}`
     : `Requested ${requestedTarget}.`;
   const warning = ir.kind === "article" && isWeakArticleResult(ir)
     ? " Warning: article extraction looks partial. Try Article mode on the full post page."
