@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Browmate</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+    <script src="sidepanel.js" defer></script>
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Browmate</p>
+          <h1>Local page extraction</h1>
+        </div>
+        <p id="status" class="status">Click Extract to capture the current page.</p>
+      </header>
+
+      <section class="controls">
+        <label class="field" for="targetSelect">
+          <span>Extraction target</span>
+          <select id="targetSelect">
+            <option value="auto">Auto detect</option>
+            <option value="table">Table</option>
+            <option value="card_list">Card list</option>
+            <option value="kv">Key/value</option>
+            <option value="article">Article</option>
+          </select>
+        </label>
+
+        <div class="button-row">
+          <button id="extractBtn" type="button">Extract</button>
+          <button id="savePresetBtn" type="button">Save preset</button>
+          <button id="loadPresetBtn" type="button">Load preset</button>
+        </div>
+
+        <div class="button-row">
+          <button id="exportJsonBtn" type="button">Export JSON</button>
+          <button id="exportCsvBtn" type="button">Export CSV</button>
+        </div>
+      </section>
+
+      <section class="meta-grid">
+        <div class="meta-card">
+          <span class="meta-label">Site</span>
+          <strong id="siteValue">Not extracted yet</strong>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Type</span>
+          <strong id="typeValue">-</strong>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Captured</span>
+          <strong id="timeValue">-</strong>
+        </div>
+      </section>
+
+      <section class="summary">
+        <h2>Preview</h2>
+        <div id="summaryContent" class="summary-content">
+          Extracted records will appear here.
+        </div>
+      </section>
+
+      <section class="payload">
+        <h2>IR JSON</h2>
+        <pre id="preview" class="preview">{}</pre>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Browmate",
+  "version": "0.1.0",
+  "description": "Local-only page extraction into a structured IR with side panel preview and export.",
+  "permissions": ["activeTab", "scripting", "sidePanel", "downloads", "storage"],
+  "action": {
+    "default_title": "Open Browmate"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  }
+}
