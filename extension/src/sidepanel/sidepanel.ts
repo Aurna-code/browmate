@@ -1,6 +1,7 @@
 /// <reference path="../shared/types.d.ts" />
 
-type SelectValue = Browmate.ExtractionTarget | "auto";
+type ExtractionTrigger = "auto_attach" | "manual_extract" | "preset_load";
+type RequestedTarget = Browmate.ExtractionTarget | "auto";
 
 const PRESETS_KEY = "sitePresets";
 const LOG_PREFIX = "[Browmate Panel]";
@@ -11,12 +12,16 @@ const state: {
   requestToken: number;
   busy: boolean;
   lastAutoExtractContextKey: string | null;
+  lastRunSource: ExtractionTrigger | null;
+  lastRequestedTarget: RequestedTarget | null;
 } = {
   currentIr: null,
   activeContext: null,
   requestToken: 0,
   busy: false,
   lastAutoExtractContextKey: null,
+  lastRunSource: null,
+  lastRequestedTarget: null,
 };
 
 function logInfo(event: string, details?: unknown): void {
@@ -47,6 +52,7 @@ const statusEl = requireElement<HTMLParagraphElement>("status");
 const siteValueEl = requireElement<HTMLElement>("siteValue");
 const typeValueEl = requireElement<HTMLElement>("typeValue");
 const timeValueEl = requireElement<HTMLElement>("timeValue");
+const sourceValueEl = requireElement<HTMLElement>("sourceValue");
 const summaryContentEl = requireElement<HTMLDivElement>("summaryContent");
 const previewEl = requireElement<HTMLPreElement>("preview");
 const targetSelectEl = requireElement<HTMLSelectElement>("targetSelect");
@@ -99,6 +105,40 @@ function detachedStatus(context: Browmate.ActiveTabContext | null): string {
     return context.error;
   }
   return "No tab is attached. Open a normal webpage and click the Browmate toolbar action.";
+}
+
+function formatRunSource(trigger: ExtractionTrigger | null): string {
+  if (trigger === "auto_attach") {
+    return "Auto attach";
+  }
+  if (trigger === "manual_extract") {
+    return "Manual extract";
+  }
+  if (trigger === "preset_load") {
+    return "Preset load";
+  }
+  return "-";
+}
+
+function preferredTargetLabel(target: Browmate.ExtractionTarget | undefined): RequestedTarget {
+  return target ?? "auto";
+}
+
+function formatRequestedTarget(target: RequestedTarget | null): string {
+  if (!target) {
+    return "-";
+  }
+  return target === "auto" ? "Auto detect" : target;
+}
+
+function buildStatusPrefix(trigger: ExtractionTrigger): string {
+  if (trigger === "auto_attach") {
+    return "Auto extract on attach";
+  }
+  if (trigger === "preset_load") {
+    return "Preset load";
+  }
+  return "Manual extract";
 }
 
 function syncControls(): void {
@@ -219,8 +259,18 @@ async function downloadText(filename: string, contents: string, mimeType: string
 }
 
 function renderSummary(ir: Browmate.ExtractedPage): void {
+  const lines: string[] = [];
+  lines.push(`Run: ${formatRunSource(state.lastRunSource)}.`);
+
+  if (state.lastRequestedTarget === "auto") {
+    lines.push(`Auto detect chose ${ir.kind}.`);
+  } else if (state.lastRequestedTarget) {
+    lines.push(`Requested ${state.lastRequestedTarget}; extracted ${ir.kind}.`);
+  }
+
   if (ir.payload.kind === "table") {
-    summaryContentEl.textContent = `Detected a table with ${ir.payload.columns.length} columns and ${ir.payload.rows.length} rows.`;
+    lines.push(`Detected a table with ${ir.payload.columns.length} columns and ${ir.payload.rows.length} rows.`);
+    summaryContentEl.textContent = lines.join(" ");
     return;
   }
 
@@ -229,7 +279,8 @@ function renderSummary(ir: Browmate.ExtractedPage): void {
       .slice(0, 3)
       .map((item) => item.title || item.text || "Untitled")
       .join(" | ");
-    summaryContentEl.textContent = `Detected ${ir.payload.items.length} cards. Sample: ${itemTitles}`;
+    lines.push(`Detected ${ir.payload.items.length} cards. Sample: ${itemTitles}`);
+    summaryContentEl.textContent = lines.join(" ");
     return;
   }
 
@@ -238,11 +289,17 @@ function renderSummary(ir: Browmate.ExtractedPage): void {
       .slice(0, 4)
       .map((entry) => `${entry.key}: ${entry.value}`)
       .join(" | ");
-    summaryContentEl.textContent = `Detected ${ir.payload.entries.length} key/value pairs. ${sample}`;
+    lines.push(`Detected ${ir.payload.entries.length} key/value pairs. ${sample}`);
+    summaryContentEl.textContent = lines.join(" ");
     return;
   }
 
-  summaryContentEl.textContent = `Headline: ${ir.payload.headline}\nSections: ${ir.payload.sections.length}\nLinks: ${ir.payload.links.length}`;
+  lines.push(
+    `Headline: ${ir.payload.headline}`,
+    `Sections: ${ir.payload.sections.length}`,
+    `Links: ${ir.payload.links.length}`,
+  );
+  summaryContentEl.textContent = lines.join("\n");
 }
 
 function renderIr(ir: Browmate.ExtractedPage): void {
@@ -250,6 +307,7 @@ function renderIr(ir: Browmate.ExtractedPage): void {
   siteValueEl.textContent = ir.meta.hostname;
   typeValueEl.textContent = ir.kind;
   timeValueEl.textContent = new Date(ir.meta.extractedAt).toLocaleTimeString();
+  sourceValueEl.textContent = formatRunSource(state.lastRunSource);
   previewEl.textContent = JSON.stringify(ir, null, 2);
   renderSummary(ir);
   syncControls();
@@ -260,21 +318,37 @@ function clearIr(): void {
   siteValueEl.textContent = "Not extracted yet";
   typeValueEl.textContent = "-";
   timeValueEl.textContent = "-";
+  sourceValueEl.textContent = "-";
   summaryContentEl.textContent = "Extracted records will appear here.";
   previewEl.textContent = "{}";
   syncControls();
 }
 
-async function extract(preferredTarget?: Browmate.ExtractionTarget): Promise<void> {
+function buildStartStatus(trigger: ExtractionTrigger, requestedTarget: RequestedTarget, context: Browmate.ActiveTabContext | null): string {
+  const prefix = buildStatusPrefix(trigger);
+  const target = formatRequestedTarget(requestedTarget);
+  return `${prefix} running on ${describeContext(context)} using ${target}...`;
+}
+
+function buildSuccessStatus(trigger: ExtractionTrigger, ir: Browmate.ExtractedPage, requestedTarget: RequestedTarget): string {
+  const prefix = buildStatusPrefix(trigger);
+  const mode = requestedTarget === "auto"
+    ? `Auto detect chose ${ir.kind}.`
+    : `Requested ${requestedTarget}.`;
+  return `${prefix} extracted ${ir.kind} from ${ir.meta.hostname}. ${mode}`;
+}
+
+async function extract(preferredTarget: Browmate.ExtractionTarget | undefined, trigger: ExtractionTrigger): Promise<void> {
   const requestToken = ++state.requestToken;
+  const requestedTarget = preferredTargetLabel(preferredTarget);
   const context = await getActiveContext();
 
   if (!hasUsableContext(context)) {
     clearIr();
-    logWarn("extract requested without attached tab", context);
+    logWarn("extract requested without attached tab", { trigger, context });
     setStatus("Trying to attach the current tab before extracting...");
   } else {
-    setStatus(`Extracting visible content from ${describeContext(context)}...`);
+    setStatus(buildStartStatus(trigger, requestedTarget, context));
   }
 
   const response = await sendRuntimeMessage<Browmate.RunExtractionRequest, Browmate.RunExtractionResponse>({
@@ -283,7 +357,7 @@ async function extract(preferredTarget?: Browmate.ExtractionTarget): Promise<voi
   });
 
   if (!response.ok || !response.ir) {
-    logWarn("extraction failed", { error: response.error, preferredTarget });
+    logWarn("extraction failed", { error: response.error, preferredTarget, trigger });
     throw new Error(response.error || "Extraction failed.");
   }
 
@@ -292,12 +366,16 @@ async function extract(preferredTarget?: Browmate.ExtractionTarget): Promise<voi
     return;
   }
 
+  state.lastRunSource = trigger;
+  state.lastRequestedTarget = requestedTarget;
   renderIr(response.ir);
   state.lastAutoExtractContextKey = contextKey(await getActiveContext());
-  setStatus(`Extracted ${response.ir.kind} data from ${response.ir.meta.hostname}.`);
+  setStatus(buildSuccessStatus(trigger, response.ir, requestedTarget));
   logInfo("extraction success", {
     kind: response.ir.kind,
     url: response.ir.meta.url,
+    trigger,
+    requestedTarget,
   });
 }
 
@@ -327,7 +405,7 @@ async function savePreset(): Promise<void> {
 
 async function loadPreset(): Promise<void> {
   if (!state.currentIr) {
-    await extract(getPreferredTarget());
+    await extract(getPreferredTarget(), "manual_extract");
   }
 
   const hostname = state.currentIr?.meta.hostname;
@@ -342,8 +420,7 @@ async function loadPreset(): Promise<void> {
   }
 
   setSelectedTarget(preset.target);
-  await extract(preset.target);
-  setStatus(`Loaded preset for ${hostname} and extracted ${preset.target}.`);
+  await extract(preset.target, "preset_load");
 }
 
 async function exportJson(): Promise<void> {
@@ -405,19 +482,20 @@ function applyActiveContext(
   const nextKey = contextKey(context);
   if (options.autoExtract && !state.busy && state.lastAutoExtractContextKey !== nextKey) {
     state.lastAutoExtractContextKey = nextKey;
-    setStatus(`Attached to ${describeContext(context)}. Extracting...`);
-    void runAction(() => extract(getPreferredTarget()));
+    clearIr();
+    setStatus(`Attached to ${describeContext(context)}. Auto extracting...`);
+    void runAction(() => extract(getPreferredTarget(), "auto_attach"));
     return;
   }
 
   if (!state.currentIr) {
-    setStatus(`Attached to ${describeContext(context)}. Click Extract to capture the page.`);
+    setStatus(`Attached to ${describeContext(context)}. Click Extract to rerun with ${formatRequestedTarget(preferredTargetLabel(getPreferredTarget()))}.`);
   }
 }
 
 function wireEvents(): void {
   extractBtn.addEventListener("click", () => {
-    void runAction(() => extract(getPreferredTarget()));
+    void runAction(() => extract(getPreferredTarget(), "manual_extract"));
   });
 
   savePresetBtn.addEventListener("click", () => {
